@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from 'react';
-// @ts-ignore
 import { io, Socket } from 'socket.io-client';
 
 const SIGNALING_SERVER_URL = 'http://localhost:3001';
