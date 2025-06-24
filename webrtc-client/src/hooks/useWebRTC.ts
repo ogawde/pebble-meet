@@ -3,8 +3,10 @@ import { io, Socket } from 'socket.io-client';
 
 const SIGNALING_SERVER_URL = 'http://localhost:3001';
 
-const useWebRTC = (roomId: string, localStream: MediaStream | null) => {
+const useWebRTC = (roomId: string, localStream: MediaStream | null, username: string) => {
   const [remoteStreams, setRemoteStreams] = useState<Record<string, MediaStream>>({});
+  const [remoteUsernames, setRemoteUsernames] = useState<Record<string, string>>({});
+  const [roomFull, setRoomFull] = useState(false);
   const [iceServers, setIceServers] = useState<RTCIceServer[]>([]);
   const socketRef = useRef<Socket | null>(null);
   const peerConnections = useRef<Record<string, RTCPeerConnection>>({});
@@ -19,7 +21,7 @@ const useWebRTC = (roomId: string, localStream: MediaStream | null) => {
         const data = await response.json();
         const servers = [...data.iceServers, { urls: 'stun:stun.l.google.com:19302' }];
         setIceServers(servers);
-      } catch (error) {
+      } catch {
         setIceServers([{ urls: 'stun:stun.l.google.com:19302' }]);
       }
     };
@@ -28,7 +30,7 @@ const useWebRTC = (roomId: string, localStream: MediaStream | null) => {
 
 
   useEffect(() => {
-    if (!localStream || iceServers.length === 0) return;
+    if (!localStream || iceServers.length === 0 || !username) return;
 
     socketRef.current = io(SIGNALING_SERVER_URL);
     const socket = socketRef.current;
@@ -60,11 +62,17 @@ const useWebRTC = (roomId: string, localStream: MediaStream | null) => {
     };
 
     socket.on('connect', () => {
-      socket.emit('join-room', roomId);
+      socket.emit('join-room', { roomId, username });
     });
 
-    socket.on('other-users', (otherUsers: string[]) => {
-      otherUsers.forEach(otherUserId => {
+    socket.on('room-full', () => {
+      setRoomFull(true);
+    });
+
+    socket.on('other-users', (data: { users: string[]; usernames: Record<string, string> }) => {
+      setRemoteUsernames(prev => ({ ...prev, ...data.usernames }));
+      
+      data.users.forEach(otherUserId => {
         if (peerConnections.current[otherUserId]) {
           return;
         }
@@ -75,10 +83,12 @@ const useWebRTC = (roomId: string, localStream: MediaStream | null) => {
           .then(() => {
             socket.emit('offer', { target: otherUserId, caller: socket.id, signal: pc.localDescription });
           })
-          .catch(error => {
-            console.error(error);
-          });
+          .catch(() => {});
       });
+    });
+
+    socket.on('user-joined', (data: { socketId: string; username: string }) => {
+      setRemoteUsernames(prev => ({ ...prev, [data.socketId]: data.username }));
     });
 
     socket.on('offer', (data: { caller: string; signal: RTCSessionDescriptionInit }) => {
@@ -93,26 +103,20 @@ const useWebRTC = (roomId: string, localStream: MediaStream | null) => {
         .then(() => {
           socket.emit('answer', { target: data.caller, caller: socket.id, signal: pc.localDescription });
         })
-        .catch(error => {
-          console.error(error);
-        });
+        .catch(() => {});
     });
 
     socket.on('answer', (data: { caller: string; signal: RTCSessionDescriptionInit }) => {
       const pc = peerConnections.current[data.caller];
       if (pc) {
-        pc.setRemoteDescription(data.signal).catch(error => {
-          console.error(error);
-        });
+        pc.setRemoteDescription(data.signal).catch(() => {});
       }
     });
 
     socket.on('ice-candidate', (data: { from: string; candidate: RTCIceCandidateInit }) => {
       const pc = peerConnections.current[data.from];
       if (pc) {
-        pc.addIceCandidate(new RTCIceCandidate(data.candidate)).catch(error => {
-          console.error(error);
-        });
+        pc.addIceCandidate(new RTCIceCandidate(data.candidate)).catch(() => {});
       }
     });
 
@@ -126,15 +130,20 @@ const useWebRTC = (roomId: string, localStream: MediaStream | null) => {
         delete newStreams[socketID];
         return newStreams;
       });
+      setRemoteUsernames(prev => {
+        const newUsernames = { ...prev };
+        delete newUsernames[socketID];
+        return newUsernames;
+      });
     });
 
     return () => {
       socket.disconnect();
       Object.values(peerConnections.current).forEach(pc => pc.close());
     };
-  }, [localStream, roomId, iceServers]);
+  }, [localStream, roomId, iceServers, username]);
 
-  return { remoteStreams };
+  return { remoteStreams, remoteUsernames, roomFull };
 };
 
 export default useWebRTC;
